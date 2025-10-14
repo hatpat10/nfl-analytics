@@ -1,5 +1,5 @@
 # ============================================================================
-# NFL BETTING MODEL - SPORTSDATA.IO ODDS INTEGRATION
+# NFL BETTING MODEL - SPORTSDATA.IO ODDS INTEGRATION (ENHANCED)
 # ============================================================================
 # Purpose: Fetch real-time odds and compare against model predictions
 # Run AFTER nfl_master_pipeline.R completes
@@ -15,7 +15,7 @@ gc()
 
 SPORTSDATA_API_KEY <- "39cfe83be78c4bcca9afb2eb9d6cf7ca"
 SEASON <- 2025
-WEEK <- 5
+WEEK <- 7
 BASE_DIR <- 'C:/Users/Patsc/Documents/nfl'
 MIN_EDGE_THRESHOLD <- 1.5
 
@@ -44,19 +44,43 @@ for (pkg in required_packages) {
 cat("✓ Packages loaded!\n\n")
 
 # ============================================================================
-# LOAD MODEL PREDICTIONS
+# LOAD MODEL PREDICTIONS (ENHANCED VERSION)
 # ============================================================================
 
 cat("Loading model predictions...\n")
 
 matchup_dir <- file.path(BASE_DIR, paste0('week', WEEK), 'matchup_analysis')
 
-if (!file.exists(file.path(matchup_dir, "betting_recommendations.csv"))) {
+# Try to load enhanced version first, fall back to standard
+enhanced_file <- file.path(matchup_dir, "betting_recommendations_enhanced.csv")
+standard_file <- file.path(matchup_dir, "betting_recommendations.csv")
+
+if (file.exists(enhanced_file)) {
+  model_predictions <- read.csv(enhanced_file)
+  cat("✓ Using ENHANCED predictions with weather/injury adjustments\n")
+  using_enhanced <- TRUE
+} else if (file.exists(standard_file)) {
+  model_predictions <- read.csv(standard_file)
+  cat("✓ Using standard predictions\n")
+  using_enhanced <- FALSE
+} else {
   stop("\n❌ ERROR: Run nfl_master_pipeline.R first!\n")
 }
 
-model_predictions <- read.csv(file.path(matchup_dir, "betting_recommendations.csv"))
-matchup_summary <- read.csv(file.path(matchup_dir, "matchup_summary.csv"))
+# Load matchup summary for additional context
+matchup_summary_enhanced <- file.path(matchup_dir, "matchup_summary_enhanced.csv")
+matchup_summary_standard <- file.path(matchup_dir, "matchup_summary.csv")
+
+if (file.exists(matchup_summary_enhanced)) {
+  matchup_summary <- read.csv(matchup_summary_enhanced)
+  cat("✓ Loaded enhanced matchup data\n")
+} else if (file.exists(matchup_summary_standard)) {
+  matchup_summary <- read.csv(matchup_summary_standard)
+  cat("✓ Loaded standard matchup data\n")
+} else {
+  matchup_summary <- NULL
+  cat("⚠ Matchup summary not found\n")
+}
 
 cat("✓ Loaded", nrow(model_predictions), "predictions\n\n")
 
@@ -119,8 +143,8 @@ process_game_odds <- function(game_row) {
   # Basic game info - use correct field names from SportsData.io
   game_info <- list(
     game_key = game_row$GameId,
-    home_team = game_row$HomeTeamName,  # Changed from HomeTeam
-    away_team = game_row$AwayTeamName,  # Changed from AwayTeam
+    home_team = game_row$HomeTeamName,
+    away_team = game_row$AwayTeamName,
     game_date = game_row$DateTime,
     status = game_row$Status
   )
@@ -136,7 +160,6 @@ process_game_odds <- function(game_row) {
   }
   
   # Find consensus or major sportsbook odds
-  # Priority: Consensus > DraftKings > FanDuel > First available (including Scrambled)
   priority_books <- c("Consensus", "DraftKings", "FanDuel", "BetMGM", "Caesars")
   
   best_odds <- NULL
@@ -148,11 +171,9 @@ process_game_odds <- function(game_row) {
     }
   }
   
-  # If no priority book found, use first available (even if "Scrambled")
-  # Note: "Scrambled" means free tier - actual sportsbook hidden but odds are real
+  # If no priority book found, use first available
   if (is.null(best_odds) && nrow(pregame_odds) > 0) {
     best_odds <- pregame_odds[1, ]
-    # If sportsbook is "Scrambled", label it clearly
     if (best_odds$Sportsbook == "Scrambled") {
       best_odds$Sportsbook <- "Market Average (Free Tier)"
     }
@@ -194,54 +215,10 @@ for (i in 1:nrow(odds_raw)) {
 cat("Processed", nrow(odds_raw), "games -", length(all_games), "with odds,", failed_games, "without odds\n")
 
 if (length(all_games) == 0) {
-  cat("\n⚠️  WARNING: No odds found in API response.\n")
-  cat("   Debugging raw data...\n\n")
-  
-  # Show structure of first game
-  if (nrow(odds_raw) > 0) {
-    cat("   First game in API response:\n")
-    first_game <- odds_raw[1, ]
-    cat("   - GameKey:", first_game$GameKey, "\n")
-    cat("   - Home:", first_game$HomeTeam, "\n")
-    cat("   - Away:", first_game$AwayTeam, "\n")
-    cat("   - Date:", first_game$DateTime, "\n")
-    cat("   - Status:", first_game$Status, "\n")
-    
-    # Check PregameOdds structure
-    cat("\n   Checking PregameOdds field:\n")
-    if ("PregameOdds" %in% names(first_game)) {
-      pregame <- first_game$PregameOdds
-      if (!is.null(pregame) && length(pregame) > 0) {
-        cat("   - PregameOdds exists with", 
-            if(is.list(pregame)) length(pregame) else if(is.data.frame(pregame)) nrow(pregame) else "unknown",
-            "entries\n")
-        cat("   - Type:", class(pregame), "\n")
-        
-        if (is.data.frame(pregame) && nrow(pregame) > 0) {
-          cat("   - Available columns:", paste(names(pregame), collapse = ", "), "\n")
-          cat("   - First sportsbook:", pregame$Sportsbook[1], "\n")
-          cat("   - Sample spread:", pregame$HomePointSpread[1], "\n")
-        } else if (is.list(pregame)) {
-          cat("   - First entry type:", class(pregame[[1]]), "\n")
-          if (is.data.frame(pregame[[1]])) {
-            cat("   - Columns:", paste(names(pregame[[1]]), collapse = ", "), "\n")
-          }
-        }
-      } else {
-        cat("   - PregameOdds is NULL or empty\n")
-        cat("   - This means odds haven't been posted yet for Week", WEEK, "\n")
-      }
-    } else {
-      cat("   - PregameOdds field doesn't exist\n")
-      cat("   - Available fields:", paste(names(first_game), collapse = ", "), "\n")
-    }
-  }
-  
-  stop("\n❌ No spread data available. Week ", WEEK, " odds may not be posted yet.\n",
-       "   Try checking Week 4 or an earlier completed week to test the script.\n")
+  stop("\n❌ No spread data available. Week ", WEEK, " odds may not be posted yet.\n")
 }
 
-# Convert to dataframe - with safe handling
+# Convert to dataframe
 odds_df <- do.call(rbind, lapply(all_games, function(x) {
   data.frame(
     game_key = if (is.null(x$game_key)) NA else x$game_key,
@@ -271,12 +248,8 @@ cat("   Using:", paste(unique(odds_df$sportsbook), collapse = ", "), "\n\n")
 
 cat("Matching team names...\n")
 
-# SportsData.io uses team abbreviations, which should match nflverse
-# The API returns: AwayTeamName and HomeTeamName with abbreviations
 odds_df <- odds_df %>%
-  mutate(
-    matchup_key = paste(away_team, "at", home_team)
-  )
+  mutate(matchup_key = paste(away_team, "at", home_team))
 
 cat("✓ Team names ready for matching\n")
 cat("   Sample matchups from odds:\n")
@@ -306,9 +279,21 @@ if (nrow(betting_analysis) == 0) {
   stop("\n❌ Team names don't match. Check abbreviations.\n")
 }
 
-# Check what columns we actually have after the join
-cat("✓ Matched", nrow(betting_analysis), "games\n")
-cat("   Available columns:", paste(names(betting_analysis), collapse = ", "), "\n\n")
+cat("✓ Matched", nrow(betting_analysis), "games\n\n")
+
+# Add enhanced context if available
+if (!is.null(matchup_summary) && nrow(matchup_summary) > 0) {
+  # Check if enhanced columns exist
+  if ("weather_impact" %in% names(matchup_summary)) {
+    betting_analysis <- betting_analysis %>%
+      left_join(
+        matchup_summary %>% select(game, weather_impact, is_dome, is_thursday, 
+                                   home_days_rest, away_days_rest),
+        by = c("matchup_key" = "game")
+      )
+    cat("✓ Added weather and rest context\n\n")
+  }
+}
 
 betting_analysis <- betting_analysis %>%
   mutate(
@@ -319,8 +304,8 @@ betting_analysis <- betting_analysis %>%
     
     # Use the correct column names from the join
     bet_side = case_when(
-      edge >= MIN_EDGE_THRESHOLD ~ home_team.y,  # from odds_df
-      edge <= -MIN_EDGE_THRESHOLD ~ away_team.y,  # from odds_df
+      edge >= MIN_EDGE_THRESHOLD ~ home_team.y,
+      edge <= -MIN_EDGE_THRESHOLD ~ away_team.y,
       TRUE ~ "PASS"
     ),
     
@@ -349,23 +334,39 @@ betting_analysis <- betting_analysis %>%
       "NO BET"
     )
   ) %>%
-  # Clean up the column names for easier use
+  # Clean up the column names
   rename(
     away_team = away_team.y,
     home_team = home_team.y
   )
 
 # ============================================================================
-# FILTER PROFITABLE BETS
+# FILTER PROFITABLE BETS WITH CONTEXT
 # ============================================================================
 
 profitable_bets <- betting_analysis %>%
   filter(ev_tier != "❌ PASS") %>%
-  arrange(desc(abs_edge)) %>%
+  arrange(desc(abs_edge))
+
+# Add context notes if available
+if ("weather_impact" %in% names(profitable_bets)) {
+  profitable_bets <- profitable_bets %>%
+    mutate(
+      context_notes = case_when(
+        weather_impact >= 2 ~ "⛈️ Weather impact",
+        is_thursday ~ "📅 Thursday game",
+        abs(home_days_rest - away_days_rest) > 3 ~ "😴 Rest mismatch",
+        TRUE ~ ""
+      )
+    )
+}
+
+profitable_bets <- profitable_bets %>%
   select(
     matchup_key, ev_tier, confidence,
     bet_recommendation, edge, vegas_line, model_line,
-    sportsbook, home_team, away_team, over_under
+    sportsbook, home_team, away_team, over_under,
+    contains("context"), contains("weather"), contains("rest"), contains("notes")
   )
 
 cat("✓ Found", nrow(profitable_bets), "profitable bets\n\n")
@@ -413,7 +414,8 @@ write_xlsx(
     Profitable_Bets = profitable_bets,
     All_Games = betting_analysis %>% 
       select(matchup_key, ev_tier, edge, vegas_line, model_line, 
-             bet_recommendation, confidence, sportsbook, over_under) %>%
+             bet_recommendation, confidence, sportsbook, over_under,
+             contains("weather"), contains("rest")) %>%
       arrange(desc(abs(edge)))
   ),
   file.path(odds_output_dir, paste0("betting_picks_week", WEEK, ".xlsx"))
@@ -434,12 +436,21 @@ write.csv(betting_analysis %>%
 cat("✓ Files exported\n\n")
 
 # ============================================================================
-# CREATE VISUALIZATION
+# CREATE ENHANCED VISUALIZATION
 # ============================================================================
 
 cat("Creating visualization...\n")
 
 if (nrow(betting_analysis) > 0) {
+  # Add weather/context markers if available
+  if ("weather_impact" %in% names(betting_analysis)) {
+    betting_analysis <- betting_analysis %>%
+      mutate(has_context = weather_impact > 0 | is_thursday)
+  } else {
+    betting_analysis <- betting_analysis %>%
+      mutate(has_context = FALSE)
+  }
+  
   edge_plot <- betting_analysis %>%
     mutate(
       game_label = paste0(away_team, " @ ", home_team),
@@ -458,12 +469,12 @@ if (nrow(betting_analysis) > 0) {
     ) +
     coord_flip() +
     labs(
-      title = paste("Week", WEEK, "- Model vs Vegas Spreads"),
+      title = paste("Week", WEEK, "- Model vs Vegas Spreads (Enhanced)"),
       subtitle = paste("Positive = Bet Home | Negative = Bet Away | Min Edge:", MIN_EDGE_THRESHOLD, "pts"),
       x = NULL,
       y = "Edge (Model Line - Vegas Line)",
       fill = NULL,
-      caption = paste("Source:", unique(betting_analysis$sportsbook)[1])
+      caption = paste("Source:", unique(betting_analysis$sportsbook)[1], "| Includes weather/rest adjustments")
     ) +
     theme_minimal(base_size = 12) +
     theme(
@@ -502,7 +513,21 @@ if (nrow(profitable_bets) > 0) {
                 bet$edge, bet$vegas_line, bet$model_line))
     cat(sprintf("   Model Confidence: %s | Sportsbook: %s\n", 
                 bet$confidence, bet$sportsbook))
-    cat(sprintf("   Over/Under: %.1f\n\n", bet$over_under))
+    cat(sprintf("   Over/Under: %.1f\n", bet$over_under))
+    
+    # Show context if available
+    if ("weather_impact" %in% names(bet)) {
+      if (!is.na(bet$weather_impact) && bet$weather_impact > 0) {
+        cat(sprintf("   ⛈️  Weather Impact: %d/3\n", bet$weather_impact))
+      }
+      if (!is.na(bet$is_thursday) && bet$is_thursday) {
+        cat("   📅 Thursday Night Game\n")
+      }
+    }
+    if ("context_notes" %in% names(bet) && !is.na(bet$context_notes) && bet$context_notes != "") {
+      cat(sprintf("   ℹ️  %s\n", bet$context_notes))
+    }
+    cat("\n")
   }
 } else {
   cat("No profitable bets found this week.\n")
@@ -515,5 +540,11 @@ cat("   - betting_picks_week", WEEK, ".xlsx\n", sep = "")
 cat("   - profitable_bets.csv\n")
 cat("   - all_games_analysis.csv\n")
 cat("   - betting_edges.png\n")
+
+if (using_enhanced) {
+  cat("\n✨ Using ENHANCED model with weather, injuries, and rest adjustments!\n")
+} else {
+  cat("\n⚠️  Using standard model. Run enhanced pipeline for better predictions.\n")
+}
 
 cat("\n✓ Done! Good luck! 🏈💰\n\n")
